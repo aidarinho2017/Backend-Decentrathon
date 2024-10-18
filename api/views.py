@@ -1,9 +1,14 @@
+import requests
 from django.contrib.auth.models import User
+from requests import Response
 from rest_framework import viewsets, status, generics
-from rest_framework.response import Response
-from .models import Resource, Booking, TimeSlot
-from .serializers import ResourceSerializer, BookingSerializer, TimeSlotSerializer, UserSerializer
+from rest_framework.views import APIView
+
+from .models import Habit, HabitTrack
+from .serializers import UserSerializer, HabitSerializer, HabitTrackSerializer
 from rest_framework.permissions import IsAuthenticated, AllowAny
+import google.generativeai as genai
+import os
 
 
 class CreateUserView(generics.CreateAPIView):
@@ -12,97 +17,73 @@ class CreateUserView(generics.CreateAPIView):
     permission_classes = [AllowAny]
 
 
-class ResourceViewSet(viewsets.ModelViewSet):
-    queryset = Resource.objects.all()
-    serializer_class = ResourceSerializer
+class HabitViewSet(viewsets.ModelViewSet):
+    queryset = Habit.objects.all()
+    serializer_class = HabitSerializer
     permission_classes = [IsAuthenticated]
 
+    def get_queryset(self):
+        return Habit.objects.filter(user=self.request.user)
 
-class TimeSlotViewSet(viewsets.ModelViewSet):
-    queryset = TimeSlot.objects.all()
-    serializer_class = TimeSlotSerializer
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+
+class HabitTrackViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
 
-
-class BookingViewSet(viewsets.ModelViewSet):
-    queryset = Booking.objects.all()
-    serializer_class = BookingSerializer
-    permission_classes = [IsAuthenticated]
-
-    def create(self, request, *args, **kwargs):
-        time_slot_id = request.data.get('time_slot')
-        date = request.data.get('date')
-
-        # Получаем временной слот
+    def increment(self, request, pk=None):
         try:
-            time_slot = TimeSlot.objects.get(id=time_slot_id, date=date)
-        except TimeSlot.DoesNotExist:
-            return Response({
-                'error': 'The selected time slot does not exist for the specified date.'
-            }, status=status.HTTP_400_BAD_REQUEST)
+            habit = Habit.objects.get(pk=pk, user=request.user)
+            track, created = HabitTrack.objects.get_or_create(habit=habit)
+            track.increment()
+            return Response(HabitTrackSerializer(track).data, status=status.HTTP_200_OK)
+        except Habit.DoesNotExist:
+            return Response({'error': 'Habit not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        # Проверка: есть ли уже бронирование этого пользователя для данного слота
-        existing_booking = Booking.objects.filter(
-            user=request.user, time_slot=time_slot, date=date
-        ).exists()
 
-        if existing_booking:
-            return Response({
-                'error': 'You have already booked this time slot for the specified date.'
-            }, status=status.HTTP_400_BAD_REQUEST)
+genai.configure(api_key=os.getenv("AIzaSyDYbBqbpukIamZIVBVa9i5yUoO4atK1Mj8"))
 
-        # Проверяем, заполнены ли слоты
-        active_bookings = Booking.objects.filter(
-            time_slot=time_slot, date=date, status='active'
-        )
 
-        if active_bookings.count() >= time_slot.max_people:
-            # Все слоты заняты, добавляем пользователя в очередь
-            queue_position = Booking.objects.filter(time_slot=time_slot, date=date, status='queued').count() + 1
-            booking = Booking.objects.create(
-                user=request.user,
-                time_slot=time_slot,
-                date=date,
-                status='queued',
-                queue_position=queue_position
+class TalkToGeminiView(APIView):
+    permission_classes = [IsAuthenticated]  # Require authentication
+
+    def post(self, request):
+        try:
+            # Extract message from the request body
+            user_message = request.data.get("message", "")
+            if not user_message:
+                return Response(
+                    {"error": "Message is required"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Prepare the request to Gemini API
+            gemini_url = "https://generativelanguage.googleapis.com/v1beta2/models/gemini-1.5-flash:generateText"
+            api_key = os.getenv("AIzaSyDYbBqbpukIamZIVBVa9i5yUoO4atK1Mj8")  # Load API key from environment
+
+            headers = {"Content-Type": "application/json"}
+            payload = {
+                "prompt": {"text": user_message},
+                "temperature": 0.7  # Control creativity (0.0 - 1.0)
+            }
+
+            # Send request to Gemini API
+            response = requests.post(
+                f"{gemini_url}?key={api_key}",
+                json=payload,
+                headers=headers
             )
-            print(f'User {request.user.username} has been added to the queue.')
-            return Response({
-                'message': 'All slots are full. You have been added to the queue.'
-            }, status=status.HTTP_201_CREATED)
 
-        # Если есть свободные слоты, создаем активное бронирование
-        booking = Booking.objects.create(
-            user=request.user,
-            time_slot=time_slot,
-            date=date,
-            status='active'
-        )
-        return Response(BookingSerializer(booking).data, status=status.HTTP_201_CREATED)
+            # Handle the response from Gemini
+            if response.status_code == 200:
+                generated_text = response.json().get("candidates", [{}])[0].get("output", "")
+                return Response({"reply": generated_text}, status=status.HTTP_200_OK)
+            else:
+                return Response(
+                    {"error": "Failed to generate content"},
+                    status=response.status_code
+                )
 
-    def destroy(self, request, *args, **kwargs):
-        booking = self.get_object()
-
-        # Удаляем бронирование
-        self.perform_destroy(booking)
-
-        # Проверяем наличие пользователей в очереди для этого слота
-        queued_booking = Booking.objects.filter(
-            time_slot=booking.time_slot, date=booking.date, status='queued'
-        ).order_by('queue_position').first()
-
-        if queued_booking:
-            # Переводим первого в очереди в статус активного
-            queued_booking.status = 'active'
-            queued_booking.queue_position = None
-            queued_booking.save()
-
-            # Уведомляем в консоль
-            print(f'User {queued_booking.user.username} has been moved from queue to active booking.')
-
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-    def list(self, request, *args, **kwargs):
-        # Получение всех бронирований текущего пользователя
-        bookings = Booking.objects.filter(user=request.user).order_by('date', 'time_slot__start_time')
-        return Response(BookingSerializer(bookings, many=True).data)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

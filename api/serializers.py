@@ -1,6 +1,6 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
-from api.models import Resource, Booking, TimeSlot
+from api.models import Habit, HabitTrack
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -14,17 +14,12 @@ class UserSerializer(serializers.ModelSerializer):
         user = User.objects.create_user(**validated_data)
         return user
 
-class ResourceSerializer(serializers.ModelSerializer):
+class HabitSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Resource
-        fields = ['id', 'name']
+        model = Habit
+        fields = ['id', 'name', 'description', 'created_at']
 
-class TimeSlotSerializer(serializers.ModelSerializer):
+class HabitTrackSerializer(serializers.ModelSerializer):
     class Meta:
-        model = TimeSlot
-        fields = ['id', 'resource', 'start_time', 'end_time', 'date', 'max_people']
-
-class BookingSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Booking
-        fields = ['id', 'user', 'time_slot', 'date', 'status', 'queue_position']
+        model = HabitTrack
+        fields = ['id', 'habit', 'count', 'last_incremented']
