@@ -9,3 +9,4 @@ sqlparse
 psycopg2-binary
 python-dotenv
 requests~=2.32.3
+google-generative-ai
