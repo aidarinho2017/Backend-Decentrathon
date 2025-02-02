@@ -1,4 +1,4 @@
-import requests
+import random
 from django.contrib.auth.models import User
 from rest_framework import viewsets, status, generics
 from rest_framework.views import APIView
@@ -8,54 +8,27 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 import traceback
 import google.generativeai as genai
 
-from .models import Habit, HabitTrack
-from .serializers import UserSerializer, HabitSerializer, HabitTrackSerializer
+from .models import Microcourse, QuizQuestion, UserScore
+from .serializers import UserSerializer
 
 # Directly set the API key (Not recommended)
-genai.configure(api_key='AIzaSyAsrJnW0dNtK0LmI-FlggNbr8LG14C5EFg')
+genai.configure(api_key='AIzaSyAEqtfxDLSE6fgwp7pmDNbv8pSdYSJ92og')
 
 class CreateUserView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = UserSerializer
     permission_classes = [AllowAny]
 
-class HabitViewSet(viewsets.ModelViewSet):
-    queryset = Habit.objects.all()
-    serializer_class = HabitSerializer
+
+class GenerateMicrocourseView(APIView):
     permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        return Habit.objects.filter(user=self.request.user)
-
-    def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
-
-class HabitTrackViewSet(viewsets.ViewSet):
-    permission_classes = [IsAuthenticated]
-
-    def increment(self, request, pk=None):
-        try:
-            habit = Habit.objects.get(pk=pk, user=request.user)
-            track, created = HabitTrack.objects.get_or_create(habit=habit)
-            track.increment()
-            return Response(HabitTrackSerializer(track).data, status=status.HTTP_200_OK)
-        except Habit.DoesNotExist:
-            return Response({'error': 'Habit not found'}, status=status.HTTP_404_NOT_FOUND)
-
-class TalkToGeminiView(APIView):
-    permission_classes = [IsAuthenticated]  # Require authentication
 
     def post(self, request):
         try:
-            # Extract message from the request body
-            user_message = request.data.get("message", "")
-            if not user_message:
-                return Response(
-                    {"error": "Message is required"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+            topics = ["Machine Learning Basics", "Neural Networks", "AI Ethics", "Computer Vision",
+                      "Reinforcement Learning"]
+            selected_topic = random.choice(topics)
 
-            # Configure generation parameters
             generation_config = {
                 "temperature": 0.9,
                 "top_p": 1,
@@ -63,25 +36,60 @@ class TalkToGeminiView(APIView):
                 "max_output_tokens": 2048,
             }
 
-            # Create the model
             model = genai.GenerativeModel(
                 model_name="gemini-1.5-flash",
                 generation_config=generation_config,
             )
 
-            # Start a chat session
+            prompt_course = f"Generate an engaging microcourse on {selected_topic}, It must be like a story, very interesting for readers"
             chat_session = model.start_chat(history=[])
+            response = chat_session.send_message(prompt_course)
+            course_content = response.text
 
-            # Send the user's message to the model
-            response = chat_session.send_message(user_message)
+            microcourse = Microcourse.objects.create(title=selected_topic, content=course_content)
 
-            # Extract the generated text
-            generated_text = response.text
+            prompt_quiz = f"Generate one high-quality multiple-choice question with four options based on the following content:\n{course_content}\nFormat: Question, Option A, Option B, Option C, Option D, Correct Option (A/B/C/D)."
+            response = chat_session.send_message(prompt_quiz)
+            quiz_text = response.text.split('\n')
 
-            return Response({"reply": generated_text}, status=status.HTTP_200_OK)
+            if len(quiz_text) >= 6:
+                question = QuizQuestion.objects.create(
+                    microcourse=microcourse,
+                    question_text=quiz_text[0],
+                    option_a=quiz_text[1],
+                    option_b=quiz_text[2],
+                    option_c=quiz_text[3],
+                    option_d=quiz_text[4],
+                    correct_option=quiz_text[5].strip()
+                )
+
+            return Response({
+                "title": microcourse.title,
+                "content": microcourse.content,
+                "quiz": {
+                    "question_text": question.question_text,
+                    "options": [question.option_a, question.option_b, question.option_c, question.option_d],
+                    "correct_option": question.correct_option
+                }
+            }, status=status.HTTP_200_OK)
 
         except Exception as e:
-            # Log the exception for debugging
             print("Exception occurred:", traceback.format_exc())
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-#
+
+
+# View to Increment User Score
+class IncrementUserScoreView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            user = request.user
+            user_score, created = UserScore.objects.get_or_create(user=user)
+            user_score.score += 10  # Increment score by 10 points
+            user_score.save()
+            return Response({"message": "Score updated successfully", "new_score": user_score.score},
+                            status=status.HTTP_200_OK)
+        except Exception as e:
+            print("Exception occurred:", traceback.format_exc())
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

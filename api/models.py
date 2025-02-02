@@ -1,27 +1,22 @@
 from django.db import models
 from django.contrib.auth.models import User
-from django.utils import timezone
 
-
-class Habit(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='habits')
-    name = models.CharField(max_length=255)
-    description = models.TextField(blank=True, null=True)
+# Models
+class Microcourse(models.Model):
+    title = models.CharField(max_length=255)
+    content = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
 
-    def __str__(self):
-        return self.name
+class QuizQuestion(models.Model):
+    microcourse = models.ForeignKey(Microcourse, on_delete=models.CASCADE, related_name='questions')
+    question_text = models.TextField()
+    option_a = models.CharField(max_length=255)
+    option_b = models.CharField(max_length=255)
+    option_c = models.CharField(max_length=255)
+    option_d = models.CharField(max_length=255)
+    correct_option = models.CharField(max_length=1)  # Stores 'A', 'B', 'C', or 'D'
 
-
-class HabitTrack(models.Model):
-    habit = models.ForeignKey(Habit, on_delete=models.CASCADE, related_name='tracks')
-    count = models.PositiveIntegerField(default=0)
-    last_incremented = models.DateTimeField(auto_now=True)
-
-    def increment(self):
-        self.count += 1
-        self.save()
-
-    def __str__(self):
-        return f"{self.habit.name} - {self.count} times"
+class UserScore(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    score = models.IntegerField(default=0)
 
